@@ -168,8 +168,8 @@ void robotnik_nav200::InitState(){
 }
 
 /* /robotnik_nav200::ActiveState
-   /Send data to nav200 and read data from nav200 
-   /Position mode of nav200
+    Send data to nav200 and read data from nav200 
+    Position mode of nav200
 */
 void robotnik_nav200::ActiveState(){
 	char nMsg[64]="\0", nReadBuffer[64]="\0";
