@@ -1,0 +1,12 @@
+
+<launch>
+  
+  
+  <!-- start node_position -->
+  <node pkg="nav200_laser" type="node_position" name="node_position" output="screen">
+
+  	<!-- load parameters -->
+  	<rosparam command="load" file="$(find nav200_laser)/config.yaml"/> 
+
+  </node>
+</launch>
