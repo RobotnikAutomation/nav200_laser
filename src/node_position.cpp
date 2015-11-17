@@ -5,6 +5,11 @@ using namespace nav;
 
 std::string port;
 std::string mode;
+std::string nav200_laser_frame_id_;
+std::string base_frame_id_;
+std::string map_frame_id_;
+std::string odom_frame_id_;
+std::string odom_topic_;
 robotnik_nav200 * rbk_nav;
 
 
@@ -145,9 +150,9 @@ void robotnik_nav200::InitState(){
    	}
 
 
-	std::cout<<"Writing messsage: "<<int(nMsg[0])<<int(nMsg[1])<<int(nMsg[2])<<int(nMsg[3])<<int(nMsg[4])<<std::endl;
+	/*std::cout<<"Writing messsage: "<<int(nMsg[0])<<int(nMsg[1])<<int(nMsg[2])<<int(nMsg[3])<<int(nMsg[4])<<std::endl;
 	std::cout<<"Reading message: "<<int(nReadBuffer[0])<<int(nReadBuffer[1])<<int(nReadBuffer[2])<<int(nReadBuffer[3])<<int(nReadBuffer[4])<<std::endl;
-	std::cout<<"read_bytes: "<<read_bytes<<std::endl;
+	std::cout<<"read_bytes: "<<read_bytes<<std::endl;*/
 
 	//Receiving error message from nav200
 	if(nReadBuffer[3]=='E'){
@@ -202,14 +207,14 @@ void robotnik_nav200::ActiveState(){
 		nMsg[10]=BlockCheck(11,nMsg);			
 	}
 
-	std::cout<<"velocity_x: "<<velocity.x<<" , "<<(velocity.x & 0xFF)<<" , "<<(velocity.x & 0xFF00)<<std::endl;
+	/*std::cout<<"velocity_x: "<<velocity.x<<" , "<<(velocity.x & 0xFF)<<" , "<<(velocity.x & 0xFF00)<<std::endl;
 	std::cout<<"velocity_y: "<<velocity.y<<" , "<<(velocity.y & 0xFF)<<" , "<<(velocity.y & 0xFF00) <<std::endl;
 	std::cout<<"velocity_theta: "<<velocity.theta<<" , "<<(velocity.theta & 0xFF)<<" , "<<(velocity.theta & 0xFF00)<<std::endl;
 	std::cout<<static_cast<float>(nMsg[4]+nMsg[5]*256)<<" , "<<static_cast<float>(nMsg[6]+nMsg[7]*256)<<std::endl;
 	std::cout<<"count: "<<count<<std::endl;
 	std::cout<<"writing*"<<std::endl;
 	std::cout<<"nMsg: "<<static_cast<int>(nMsg[0])<<static_cast<int>(nMsg[1])<<static_cast<int>(nMsg[2])<<static_cast<int>(nMsg[3])<<static_cast<int>(nMsg[4])<<static_cast<int>(nMsg[5])<<static_cast<int>(nMsg[6])<<static_cast<int>(nMsg[7])<<static_cast<int>(nMsg[8])<<static_cast<int>(nMsg[9])<<static_cast<int>(nMsg[10])<<std::endl;
-		
+	*/	
 
 		// Send message to serial port in order to activate nav200 positioning mode	
 		if(serial->WritePort(nMsg, &written_bytes, numb_bytes) != OK) {
@@ -225,7 +230,7 @@ void robotnik_nav200::ActiveState(){
         		ret = serial->ReadPort(nReadBuffer, &read_bytes, sizeof(nReadBuffer));
         		iTry++;
        	 		usleep(10000);
-			std::cout<<"iTry:"<<iTry<<" , "<<"read_bytes:"<<read_bytes<<std::endl;
+			//std::cout<<"iTry:"<<iTry<<" , "<<"read_bytes:"<<read_bytes<<std::endl;
    		}
 		if((iTry==max_iTRY) && (read_bytes==0)){
 			ROS_ERROR("robotnik_nav200::ActiveState: Error receiving message.");
@@ -336,6 +341,29 @@ unsigned char robotnik_nav200::BlockCheck(int bLong,char *nMsg)
 	return LRC;
 }
 
+int robotnik_nav200::GetState(){
+	return iState;
+}
+
+char* robotnik_nav200::GetStateString(){
+	switch (iState) {
+		case INIT_STATE:
+			return "INIT";
+			break;
+		case ACTIVE_STATE:
+			return "ACTIVE";
+			break;
+		case FAILURE_STATE:
+			return "FAILURE";
+			break;
+		
+		default:
+			return "UNKNOWN";	
+		break;
+	}
+}
+			
+
 //callback function for feeeding_speed mode
 void callback1(const nav_msgs::Odometry::ConstPtr& msg_odom){
 		
@@ -364,6 +392,38 @@ void callback2(const nav_msgs::Odometry::ConstPtr& msg_odom){
 	pos_wrt_odom.theta=yaw;
 }
 
+
+int getTransform(tf::StampedTransform *trans, std::string from_frame, std::string to_frame){
+	
+	static tf::TransformListener listener;
+	tf::StampedTransform transform;
+		
+	try{
+		listener.lookupTransform(from_frame, to_frame, 
+							   ros::Time(0), transform);
+	}
+	catch (tf::TransformException ex){
+		ROS_ERROR("getTransform: %s",ex.what());
+		return -1;
+	}
+	
+	*trans = transform;
+	
+	return 0;
+	
+}
+
+double radnorm(double radians){
+	while (radians >= (M_PI)) {
+		radians -= 2.0 * M_PI;
+	}
+	while (radians <= (-M_PI)) {
+		radians += 2.0 * M_PI;
+	}
+	
+	return radians;
+}
+
 //-------------------------------------MAIN------------------------------------
 
 void map2odom();
@@ -379,39 +439,81 @@ int main(int argc, char** argv){
 	
 	pn.param<std::string>("port", port, "/dev/ttyUSB0");
 	pn.param<std::string>("mode", mode, "automatic_speed");
+	pn.param<std::string>("nav200_laser_frame_id", nav200_laser_frame_id_, "nav200_laser_link");
+	pn.param<std::string>("base_frame_id", base_frame_id_, "base_footprint");
+	pn.param<std::string>("map_frame_id", map_frame_id_, "/map");
+	pn.param<std::string>("odom_frame_id", odom_frame_id_, "/odom");
+	pn.param<std::string>("odom_topic", odom_topic_, "/odom");
+	pn.param<double>("min_estimation_quality_", min_estimation_quality_, 70.0);
 
 	std::cout<<"Nav 200 mode: "<<mode<<std::endl;
 
 	static tf::TransformBroadcaster br;
-        tf::Transform transform;
+	
+	tf::Transform transform;
 	tf::Quaternion q;
+	tf::StampedTransform transfor_nav_to_baselink;
+	tf::StampedTransform transform_base_to_odom;
+	tf::Vector3 origin;
+	tf::Quaternion rotation;
+	bool transform_ok = false;
+	bool nav200_ok = false;
 	
 	// Create node object
 	rbk_nav = new robotnik_nav200(port);
 	
 	// Publishing robotnik_nav200_node
 	//ros::Publisher pos_pub = pn.advertise<geometry_msgs::Pose2D>("pose", 50);
-	ros::Publisher pos_pub = pn.advertise<nav200_laser::Pose2D_nav>("pose",50);
-	if( rbk_nav->Open()==OK ) ROS_INFO("Connected to robotnik_nav200 component");
+	ros::Publisher pos_pub = pn.advertise<nav200_laser::Pose2D_nav>("nav200_pose",10);
+	ros::Publisher pose_estimated_pub = pn.advertise<geometry_msgs::PoseStamped>("pose", 10);
+	
+	if( rbk_nav->Open()==OK ) 
+		ROS_INFO("Connected to robotnik_nav200 component");
 	else
 	{
 		ROS_FATAL("Could not connect to robotnik_nav200 component");
 		//ROS_BREAK();
+		return -1;
 	}
 	
 	
 	ros::Rate r(5.0);
 	
 	if(mode=="automatic_speed"){
-
 		ros::Subscriber sub = n.subscribe("odom",5,callback2);
+	}else{
+		ros::Subscriber sub = n.subscribe("odom",5,callback1);
+	}
+	
+	while(pn.ok())
+	{		
 
-		while(pn.ok())
-		{		
-
-			// 1 State Machine
-			rbk_nav->StateMachine();
-		 
+		// 1 State Machine
+		rbk_nav->StateMachine();
+	 
+		if(not transform_ok){
+			if(getTransform(&transfor_nav_to_baselink, nav200_laser_frame_id_, base_frame_id_) == 0){
+				transform_ok = true;
+				
+				origin = transfor_nav_to_baselink.getOrigin();
+				origin.setZ(0.0);
+				rotation = transfor_nav_to_baselink.getRotation();
+				transfor_nav_to_baselink.setOrigin(origin);
+				//ROS_INFO("origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
+				//ROS_INFO("rotation: angle = %lf", rotation.getAngle() );
+				
+				//transform.setOrigin(tf::Vector3(10.0,0.0,0));
+				//q.setRPY(0,0,0.0);
+				//transform.setRotation(q);
+				
+				/*transform*=transfor_nav_to_baselink;
+				origin = transform.getOrigin();
+				rotation = transform.getRotation();
+				ROS_INFO("-> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
+				ROS_INFO("-> rotation: angle = %lf", rotation.getAngle() );*/
+				
+			}
+		}else{
 			// 2 Publish
 			nav200_laser::Pose2D_nav pose2D_msg;				
 			
@@ -422,56 +524,50 @@ int main(int argc, char** argv){
 			pose2D_msg.refnumb=msg.refnumb;
 	
 			pos_pub.publish(pose2D_msg);
-			
-			if(msg.quality>=80){
-				map2odom();
+						
+			if(msg.quality >= min_estimation_quality_){
+				//map2odom();
+					
+				quality_msg = msg;			
+				if(getTransform(&transform_base_to_odom, base_frame_id_, odom_frame_id_) == 0)
+					nav200_ok = true;
 			}
-	
-			transform.setOrigin(tf::Vector3(odom_pos.x,odom_pos.y,0));
-			q.setRPY(0,0,odom_pos.theta);
-			transform.setRotation(q);
-			br.sendTransform(tf::StampedTransform(transform,ros::Time::now(),"map","odom"));
-
-		
-			ros::spinOnce();
-			r.sleep();
-		}
-	}	
-	else if(mode=="feeding_speed"){
-	
-		ros::Subscriber sub = n.subscribe("odom",5,callback1);
-		
-		while(n.ok())
-		{		
-
-			// 1 State Machine
-			rbk_nav->StateMachine();
-
-			// 2 Publish 
-			nav200_laser::Pose2D_nav pose2D_msg;				
 			
-			pose2D_msg.x=msg.x;
-			pose2D_msg.y=msg.y;
-			pose2D_msg.theta=msg.theta;
-			pose2D_msg.quality=msg.quality;
-			pose2D_msg.refnumb=msg.refnumb;	
-
-			pos_pub.publish(pose2D_msg);
-			
-			if(msg.quality>=80){
-				map2odom();
+			if(nav200_ok){				
+				//origin = transform_base_to_odom.getOrigin();
+				//rotation = transform_base_to_odom.getRotation();
+				//ROS_INFO("base to odom -> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
+				//ROS_INFO("base to odom -> rotation: angle = %lf", rotation.getAngle() );
+				
+				transform.setOrigin(tf::Vector3(quality_msg.x,quality_msg.y,0));
+				q.setRPY(0,0,radnorm(quality_msg.theta*PI/180));
+				transform.setRotation(q);
+				transform*=transfor_nav_to_baselink;
+				transform*=transform_base_to_odom;
+				
+				//origin = transform.getOrigin();
+				//rotation = transform.getRotation();
+				//ROS_INFO("map to odom -> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
+				//ROS_INFO("map to odom -> rotation: angle = %lf", rotation.getAngle() );
+				br.sendTransform(tf::StampedTransform(transform,ros::Time::now(),map_frame_id_, odom_frame_id_));
+				
+				/*geometry_msgs::PoseStamped ps;
+				
+				ps.header.stamp = ros::Time::now();
+				
+				ps.pose.position.x = robot_odometry.pose.pose.position.x + ts.transform.translation.x;
+				ps.pose.position.y = robot_odometry.pose.pose.position.y + ts.transform.translation.y;
+				ps.pose.orientation = robot_odometry.pose.pose.orientation;
+				
+				pose_estimated_publisher.publish(ps);*/
 			}
-
-			transform.setOrigin(tf::Vector3(odom_pos.x,odom_pos.y,0));
-			q.setRPY(0,0,odom_pos.theta);
-			transform.setRotation(q);
-			br.sendTransform(tf::StampedTransform(transform,ros::Time::now(),"map","odom"));
 			
 
-			ros::spinOnce();
-			r.sleep();
 		}
+		ros::spinOnce();
+		r.sleep();
 	}
+	
 
 
 	rbk_nav->Close();
@@ -483,9 +579,9 @@ int main(int argc, char** argv){
 void map2odom(){
 	
 	odom_pos.theta=(msg.theta*PI/180-pos_wrt_odom.theta);
-	std::cout<<"fi:"<<msg.theta*PI/180<<std::endl;
+	/*std::cout<<"fi:"<<msg.theta*PI/180<<std::endl;
 	std::cout<<"alfa:"<<pos_wrt_odom.theta<<std::endl;
-	std::cout<<"odom_pos.theta"<<odom_pos.theta<<std::endl;
+	std::cout<<"odom_pos.theta"<<odom_pos.theta<<std::endl;*/
 	
 		odom_pos.x = msg.x -pos_wrt_odom.x*cos(odom_pos.theta) + pos_wrt_odom.y*sin(odom_pos.theta);
 		odom_pos.y = msg.y -pos_wrt_odom.y*cos(odom_pos.theta) - pos_wrt_odom.x*sin(odom_pos.theta);			

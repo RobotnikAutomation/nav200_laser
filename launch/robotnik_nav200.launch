@@ -3,7 +3,7 @@
   
   
   <!-- start node_position -->
-  <node pkg="nav200_laser" type="node_position" name="node_position" output="screen">
+  <node pkg="nav200_laser" type="node_position" name="nav200_laser_node" output="screen">
 
   	<!-- load parameters -->
   	<rosparam command="load" file="$(find nav200_laser)/config.yaml"/> 
