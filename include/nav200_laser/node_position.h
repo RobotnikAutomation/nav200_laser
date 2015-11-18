@@ -77,10 +77,13 @@ namespace nav{
 	//Main Class
 	class robotnik_nav200{
 
+		public:
+			bool position_ok;
 		private:
 			int iState;
 			int iErrorType;
 			SerialDevice *serial;
+			
 			
 		public:
 			//Constructer	
@@ -92,7 +95,7 @@ namespace nav{
 			int Open();
 			int Close();
 			int GetState();
-			char* GetStateString();
+			std::string GetStateString();
 		private:
 			void InitState();
 			void ActiveState();

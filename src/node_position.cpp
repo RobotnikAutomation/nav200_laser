@@ -183,6 +183,7 @@ void robotnik_nav200::ActiveState(){
 	int iTry=0, max_iTRY=200,ret=0;
 	int numb_bytes;
 	static long count=0;
+	position_ok = false;
 	
 	if(mode=="automatic_speed"){
 		numb_bytes=5;		
@@ -205,6 +206,7 @@ void robotnik_nav200::ActiveState(){
 		nMsg[8]=(velocity.theta & 0xFF);
 		nMsg[9]=((velocity.theta & 0xFF00) >> 8);
 		nMsg[10]=BlockCheck(11,nMsg);			
+		//ROS_INFO("Feeding speed = (%d, %d, %d)", velocity.x, velocity.y, velocity.theta);
 	}
 
 	/*std::cout<<"velocity_x: "<<velocity.x<<" , "<<(velocity.x & 0xFF)<<" , "<<(velocity.x & 0xFF00)<<std::endl;
@@ -216,60 +218,65 @@ void robotnik_nav200::ActiveState(){
 	std::cout<<"nMsg: "<<static_cast<int>(nMsg[0])<<static_cast<int>(nMsg[1])<<static_cast<int>(nMsg[2])<<static_cast<int>(nMsg[3])<<static_cast<int>(nMsg[4])<<static_cast<int>(nMsg[5])<<static_cast<int>(nMsg[6])<<static_cast<int>(nMsg[7])<<static_cast<int>(nMsg[8])<<static_cast<int>(nMsg[9])<<static_cast<int>(nMsg[10])<<std::endl;
 	*/	
 
-		// Send message to serial port in order to activate nav200 positioning mode	
-		if(serial->WritePort(nMsg, &written_bytes, numb_bytes) != OK) {
-			ROS_ERROR("robotnik_nav200::ActiveState: Error writing message");
-			SwitchToState(FAILURE_STATE);
-			iErrorType=ERROR_WRITE;
-        	}
+	// Send message to serial port in order to activate nav200 positioning mode	
+	if(serial->WritePort(nMsg, &written_bytes, numb_bytes) != OK) {
+		ROS_ERROR("robotnik_nav200::ActiveState: Error writing message");
+		SwitchToState(FAILURE_STATE);
+		iErrorType=ERROR_WRITE;
+	}
 		
-		//Waits for response
+	//Waits for response
+	usleep(50000);
+	// Read nav200 messages
+	while ((iTry<max_iTRY) && (read_bytes==0)) {
+		ret = serial->ReadPort(nReadBuffer, &read_bytes, 17);
+		iTry++;
 		usleep(10000);
-		// Read nav200 messages
-        	while ((iTry<max_iTRY) && (read_bytes==0)) {
-        		ret = serial->ReadPort(nReadBuffer, &read_bytes, sizeof(nReadBuffer));
-        		iTry++;
-       	 		usleep(10000);
-			//std::cout<<"iTry:"<<iTry<<" , "<<"read_bytes:"<<read_bytes<<std::endl;
-   		}
-		if((iTry==max_iTRY) && (read_bytes==0)){
-			ROS_ERROR("robotnik_nav200::ActiveState: Error receiving message.");
-			serial->Flush();
-			SwitchToState(FAILURE_STATE);
-			count=0;
-			iErrorType=ERROR_RECEIVE;			
+		//std::cout<<"iTry:"<<iTry<<" , "<<"read_bytes:"<<read_bytes<<std::endl;
+	}
+	if((iTry==max_iTRY) && (read_bytes==0)){
+		ROS_ERROR("robotnik_nav200::ActiveState: Error receiving message.");
+		serial->Flush();
+		SwitchToState(FAILURE_STATE);
+		count=0;
+		iErrorType=ERROR_RECEIVE;			
+	}
+		
+	//nav200 send error message		
+	if(nReadBuffer[3]=='E'){
+		ROS_INFO("robotnik_nav200::ActiveState: Error message from nav200.");
+		ROS_ERROR("Error type: F0 = %d, F1 = %d, F2 = %d, F3 = %d", static_cast<int>(nReadBuffer[4]), static_cast<int>(nReadBuffer[5]), static_cast<int>(nReadBuffer[6]), static_cast<int>(nReadBuffer[7]));			
+	}
+	//succesfull reading data 
+	else if(read_bytes==17){
+		msg.x = static_cast<float>(static_cast<unsigned char>(nReadBuffer[7])*16777216 + static_cast<unsigned char>(nReadBuffer[6])*65536 + static_cast<unsigned char>(nReadBuffer[5])*256 + static_cast<unsigned char>(nReadBuffer[4]))/1000;
+		msg.y = static_cast<float>(static_cast<unsigned char>(nReadBuffer[11])*16777216 + static_cast<unsigned char>(nReadBuffer[10])*65536 + static_cast<unsigned char>(nReadBuffer[9])*256 + static_cast<unsigned char>(nReadBuffer[8]))/1000;
+		msg.theta = static_cast<float>(static_cast<unsigned char>(nReadBuffer[13])*256 + static_cast<unsigned char>(nReadBuffer[12]))*0.0055f;
+		//Angle conversion
+		if(msg.theta>180){
+			msg.theta=msg.theta-360;				
 		}
-			
-		//nav200 send error message		
-		if(nReadBuffer[3]=='E'){
-			ROS_INFO("robotnik_nav200::ActiveState: Error message from nav200.");
-			std::cout<<"Error type: "<<static_cast<int>(nReadBuffer[5])<<static_cast<int>(nReadBuffer[6])<<static_cast<int>(nReadBuffer[7])<<std::endl;			
-		}
-		//succesfull reading data 
-		else if(read_bytes==17){
-			msg.x = static_cast<float>(static_cast<unsigned char>(nReadBuffer[7])*16777216 + static_cast<unsigned char>(nReadBuffer[6])*65536 + static_cast<unsigned char>(nReadBuffer[5])*256 + static_cast<unsigned char>(nReadBuffer[4]))/1000;
-			msg.y = static_cast<float>(static_cast<unsigned char>(nReadBuffer[11])*16777216 + static_cast<unsigned char>(nReadBuffer[10])*65536 + static_cast<unsigned char>(nReadBuffer[9])*256 + static_cast<unsigned char>(nReadBuffer[8]))/1000;
-			msg.theta = static_cast<float>(static_cast<unsigned char>(nReadBuffer[13])*256 + static_cast<unsigned char>(nReadBuffer[12]))*0.0055f;
-			//Angle conversion
-			if(msg.theta>180){
-				msg.theta=msg.theta-360;				
-			}
-			//Quality and number of reading reflector
-			msg.quality=static_cast<int>(nReadBuffer[14]);
-			msg.refnumb=static_cast<int>(nReadBuffer[15]);
+		//Quality and number of reading reflector
+		msg.quality=static_cast<int>(nReadBuffer[14]);
+		msg.refnumb=static_cast<int>(nReadBuffer[15]);
+		
+		position_ok = true;
+		//ROS_INFO("OK: iTry = %d", iTry);
 /*
 
-			std::cout<<"x_bytes:"<<static_cast<int>(nReadBuffer[7])<<static_cast<int>(nReadBuffer[6])<<static_cast<int>(nReadBuffer[5])<<static_cast<int>(nReadBuffer[4])<<std::endl;
-			std::cout<<"x:"<<msg.x<<std::endl;
-			std::cout<<"y_bytes:"<<static_cast<int>(nReadBuffer[11])<<static_cast<int>(nReadBuffer[10])<<static_cast<int>(nReadBuffer[9])<<static_cast<int>(nReadBuffer[8])<<std::endl;
-			std::cout<<"y:"<<msg.y<<std::endl;
-			std::cout<<"theta:"<<msg.theta<<std::endl;
-	
-			std::cout<<"nReadBuffer: "<<static_cast<int>(nReadBuffer[0])<<static_cast<int>(nReadBuffer[1])<<static_cast<int>(nReadBuffer[2])<<static_cast<int>(nReadBuffer[3])<<static_cast<int>(nReadBuffer[14])<<static_cast<int>(nReadBuffer[15])<<std::endl;
-			std::cout<<"------------"<<std::endl;
+		std::cout<<"x_bytes:"<<static_cast<int>(nReadBuffer[7])<<static_cast<int>(nReadBuffer[6])<<static_cast<int>(nReadBuffer[5])<<static_cast<int>(nReadBuffer[4])<<std::endl;
+		std::cout<<"x:"<<msg.x<<std::endl;
+		std::cout<<"y_bytes:"<<static_cast<int>(nReadBuffer[11])<<static_cast<int>(nReadBuffer[10])<<static_cast<int>(nReadBuffer[9])<<static_cast<int>(nReadBuffer[8])<<std::endl;
+		std::cout<<"y:"<<msg.y<<std::endl;
+		std::cout<<"theta:"<<msg.theta<<std::endl;
+
+		std::cout<<"nReadBuffer: "<<static_cast<int>(nReadBuffer[0])<<static_cast<int>(nReadBuffer[1])<<static_cast<int>(nReadBuffer[2])<<static_cast<int>(nReadBuffer[3])<<static_cast<int>(nReadBuffer[14])<<static_cast<int>(nReadBuffer[15])<<std::endl;
+		std::cout<<"------------"<<std::endl;
 */		
 		count++;
-		}
+	}else{
+		ROS_WARN("robotnik_nav200::ActiveState: read_bytes = %d, iTry = %d", read_bytes, iTry);
+	}
 }	
 
 
@@ -345,7 +352,7 @@ int robotnik_nav200::GetState(){
 	return iState;
 }
 
-char* robotnik_nav200::GetStateString(){
+std::string robotnik_nav200::GetStateString(){
 	switch (iState) {
 		case INIT_STATE:
 			return "INIT";
@@ -366,10 +373,10 @@ char* robotnik_nav200::GetStateString(){
 
 //callback function for feeeding_speed mode
 void callback1(const nav_msgs::Odometry::ConstPtr& msg_odom){
-		
 		velocity.x=static_cast<int>(msg_odom->twist.twist.linear.x*1000);
 		velocity.y=static_cast<int>(msg_odom->twist.twist.linear.y*1000);
-		velocity.theta=static_cast<int>(msg_odom->twist.twist.angular.z*2*16384/PI);
+		//velocity.theta=static_cast<int>(msg_odom->twist.twist.angular.z*2*16384/PI);
+		velocity.theta=static_cast<int>(msg_odom->twist.twist.angular.z*2*180/PI);
                 
 		pos_wrt_odom.x = msg_odom->pose.pose.position.x;
 		pos_wrt_odom.y = msg_odom->pose.pose.position.y;	
@@ -433,7 +440,7 @@ int main(int argc, char** argv){
 	
 	ros::init(argc, argv, "robotnik_nav200_node");
 	//ROS_INFO("robotnik_nav200 for ROS %.2f", NODE_VERSION);	
-	
+	ros::Subscriber odom_sub;
 	ros::NodeHandle n;
 	ros::NodeHandle pn("~");
 	
@@ -480,9 +487,9 @@ int main(int argc, char** argv){
 	ros::Rate r(5.0);
 	
 	if(mode=="automatic_speed"){
-		ros::Subscriber sub = n.subscribe("odom",5,callback2);
+		odom_sub = n.subscribe("/odom",5,callback2);
 	}else{
-		ros::Subscriber sub = n.subscribe("odom",5,callback1);
+		odom_sub = n.subscribe("/odom",5,callback1);
 	}
 	
 	while(pn.ok())
@@ -522,10 +529,13 @@ int main(int argc, char** argv){
 			pose2D_msg.theta=msg.theta;
 			pose2D_msg.quality=msg.quality;
 			pose2D_msg.refnumb=msg.refnumb;
+			pose2D_msg.header.stamp = ros::Time::now();
+			pose2D_msg.header.frame_id = nav200_laser_frame_id_;
+			pose2D_msg.state = rbk_nav->GetStateString();
 	
 			pos_pub.publish(pose2D_msg);
 						
-			if(msg.quality >= min_estimation_quality_){
+			if(rbk_nav->position_ok && msg.quality >= min_estimation_quality_){
 				//map2odom();
 					
 				quality_msg = msg;			
