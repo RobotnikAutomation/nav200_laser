@@ -1,5 +1,6 @@
 #include "nav200_laser/node_position.h"
 
+#include <pthread.h>
 
 using namespace nav;
 
@@ -10,7 +11,29 @@ std::string base_frame_id_;
 std::string map_frame_id_;
 std::string odom_frame_id_;
 std::string odom_topic_;
+double desired_publish_freq_;
+double desired_read_freq_;
 robotnik_nav200 * rbk_nav;
+
+/*! \fn void *readNavThread(void *threadParam)
+ * \param threadParam as void *, parameters of thread
+ * Function executing in the thread
+*/
+void *readNavThread(void *threadParam){
+	ros::NodeHandle pn("~");
+	ros::Rate r(desired_read_freq_);
+	
+	while(pn.ok())
+	{		
+
+		// 1 State Machine
+		rbk_nav->StateMachine();
+		r.sleep();
+	}
+	
+	
+	return NULL;
+}
 
 
 /*!	\fn robotnik_nav200::robotnik_nav200()
@@ -433,7 +456,6 @@ double radnorm(double radians){
 
 //-------------------------------------MAIN------------------------------------
 
-void map2odom();
 
 // MAIN
 int main(int argc, char** argv){
@@ -443,6 +465,7 @@ int main(int argc, char** argv){
 	ros::Subscriber odom_sub;
 	ros::NodeHandle n;
 	ros::NodeHandle pn("~");
+	pthread_t pthreadId;
 	
 	pn.param<std::string>("port", port, "/dev/ttyUSB0");
 	pn.param<std::string>("mode", mode, "automatic_speed");
@@ -452,6 +475,8 @@ int main(int argc, char** argv){
 	pn.param<std::string>("odom_frame_id", odom_frame_id_, "/odom");
 	pn.param<std::string>("odom_topic", odom_topic_, "/odom");
 	pn.param<double>("min_estimation_quality_", min_estimation_quality_, 70.0);
+	pn.param<double>("desired_read_freq", desired_read_freq_, 5.0);
+	pn.param<double>("desired_publish_freq", desired_publish_freq_, 20.0);
 
 	std::cout<<"Nav 200 mode: "<<mode<<std::endl;
 
@@ -470,7 +495,6 @@ int main(int argc, char** argv){
 	rbk_nav = new robotnik_nav200(port);
 	
 	// Publishing robotnik_nav200_node
-	//ros::Publisher pos_pub = pn.advertise<geometry_msgs::Pose2D>("pose", 50);
 	ros::Publisher pos_pub = pn.advertise<nav200_laser::Pose2D_nav>("nav200_pose",10);
 	ros::Publisher pose_estimated_pub = pn.advertise<geometry_msgs::PoseStamped>("pose", 10);
 	
@@ -483,8 +507,20 @@ int main(int argc, char** argv){
 		return -1;
 	}
 	
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	// Creation of the main thread
+	if(pthread_create(&pthreadId, &attr, &readNavThread, NULL) != 0)	{
+		ROS_ERROR("Nav200: Could not create auxiliar thread");
+		pthread_attr_destroy(&attr);
+		return -1;
+	}
 	
-	ros::Rate r(5.0);
+	pthread_attr_destroy(&attr);
+	
+	sleep(2);
+	ros::Rate r(desired_publish_freq_);
 	
 	if(mode=="automatic_speed"){
 		odom_sub = n.subscribe("/odom",5,callback2);
@@ -496,7 +532,7 @@ int main(int argc, char** argv){
 	{		
 
 		// 1 State Machine
-		rbk_nav->StateMachine();
+		//rbk_nav->StateMachine();
 	 
 		if(not transform_ok){
 			if(getTransform(&transfor_nav_to_baselink, nav200_laser_frame_id_, base_frame_id_) == 0){
@@ -506,18 +542,6 @@ int main(int argc, char** argv){
 				origin.setZ(0.0);
 				rotation = transfor_nav_to_baselink.getRotation();
 				transfor_nav_to_baselink.setOrigin(origin);
-				//ROS_INFO("origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
-				//ROS_INFO("rotation: angle = %lf", rotation.getAngle() );
-				
-				//transform.setOrigin(tf::Vector3(10.0,0.0,0));
-				//q.setRPY(0,0,0.0);
-				//transform.setRotation(q);
-				
-				/*transform*=transfor_nav_to_baselink;
-				origin = transform.getOrigin();
-				rotation = transform.getRotation();
-				ROS_INFO("-> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
-				ROS_INFO("-> rotation: angle = %lf", rotation.getAngle() );*/
 				
 			}
 		}else{
@@ -535,41 +559,23 @@ int main(int argc, char** argv){
 	
 			pos_pub.publish(pose2D_msg);
 						
-			if(rbk_nav->position_ok && msg.quality >= min_estimation_quality_){
-				//map2odom();
-					
+			if(rbk_nav->position_ok && msg.quality >= min_estimation_quality_){	
 				quality_msg = msg;			
 				if(getTransform(&transform_base_to_odom, base_frame_id_, odom_frame_id_) == 0)
 					nav200_ok = true;
 			}
 			
 			if(nav200_ok){				
-				//origin = transform_base_to_odom.getOrigin();
-				//rotation = transform_base_to_odom.getRotation();
-				//ROS_INFO("base to odom -> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
-				//ROS_INFO("base to odom -> rotation: angle = %lf", rotation.getAngle() );
-				
+
 				transform.setOrigin(tf::Vector3(quality_msg.x,quality_msg.y,0));
 				q.setRPY(0,0,radnorm(quality_msg.theta*PI/180));
 				transform.setRotation(q);
 				transform*=transfor_nav_to_baselink;
 				transform*=transform_base_to_odom;
 				
-				//origin = transform.getOrigin();
-				//rotation = transform.getRotation();
-				//ROS_INFO("map to odom -> origin: x = %lf, y = %lf, z = %lf, w = %lf", origin.x(), origin.y(), origin.z(), origin.w() );
-				//ROS_INFO("map to odom -> rotation: angle = %lf", rotation.getAngle() );
 				br.sendTransform(tf::StampedTransform(transform,ros::Time::now(),map_frame_id_, odom_frame_id_));
 				
-				/*geometry_msgs::PoseStamped ps;
-				
-				ps.header.stamp = ros::Time::now();
-				
-				ps.pose.position.x = robot_odometry.pose.pose.position.x + ts.transform.translation.x;
-				ps.pose.position.y = robot_odometry.pose.pose.position.y + ts.transform.translation.y;
-				ps.pose.orientation = robot_odometry.pose.pose.orientation;
-				
-				pose_estimated_publisher.publish(ps);*/
+		
 			}
 			
 
@@ -585,17 +591,6 @@ int main(int argc, char** argv){
 	return 0;
 }
 
-
-void map2odom(){
-	
-	odom_pos.theta=(msg.theta*PI/180-pos_wrt_odom.theta);
-	/*std::cout<<"fi:"<<msg.theta*PI/180<<std::endl;
-	std::cout<<"alfa:"<<pos_wrt_odom.theta<<std::endl;
-	std::cout<<"odom_pos.theta"<<odom_pos.theta<<std::endl;*/
-	
-		odom_pos.x = msg.x -pos_wrt_odom.x*cos(odom_pos.theta) + pos_wrt_odom.y*sin(odom_pos.theta);
-		odom_pos.y = msg.y -pos_wrt_odom.y*cos(odom_pos.theta) - pos_wrt_odom.x*sin(odom_pos.theta);			
-}
 
 
 // EOF
